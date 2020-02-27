@@ -1,7 +1,7 @@
 set GDB_PATH=C:\Users\USER\ESP8266\xtensa-lx106-elf-win32-1.22.0-100-ge567ec7-5.2.0\bin
 set CURRENT_DIR=%~dp0
 
-%GDB_PATH%\xtensa-lx106-elf-gdb.exe %CURRENT_DIR%cmake-build-debug\Projectors.elf
+%GDB_PATH%\xtensa-lx106-elf-gdb.exe %CURRENT_DIR%cmake-build-debug\Motion_Detector.elf
 
 :: Then:
 :: > info symbol 0x<address>

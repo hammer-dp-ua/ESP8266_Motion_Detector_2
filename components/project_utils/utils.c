@@ -4,7 +4,8 @@ static void (*on_wifi_connected_g)();
 static void (*on_wifi_disconnected_g)();
 static void (*on_wifi_connection_g)();
 
-static os_timer_t wi_fi_reconnection_timer_g;
+static esp_timer_handle_t wi_fi_reconnection_timer_g = NULL;
+static unsigned int *time_g = NULL;
 
 /**
  * Do not forget to call free() function on returned pointer when it's no longer needed.
@@ -91,11 +92,17 @@ void *set_string_parameters(const char string[], const char *parameters[]) {
 
 static void connect_to_ap() {
    #ifdef ALLOW_USE_PRINTF
-   printf("\nConnect to AP...\n");
+   printf("\nConnection to AP... Time: %u\n", *time_g);
    #endif
 
-   esp_wifi_connect();
+   on_wifi_connection_g();
+   ESP_ERROR_CHECK(esp_wifi_connect())
 }
+
+void disable_wifi_event_handler() {
+   esp_event_loop_set_cb(NULL, NULL);
+}
+
 static esp_err_t esp_event_handler(void *ctx, system_event_t *event) {
    switch(event->event_id) {
       case SYSTEM_EVENT_STA_START:
@@ -104,8 +111,6 @@ static esp_err_t esp_event_handler(void *ctx, system_event_t *event) {
          #endif
 
          connect_to_ap();
-         on_wifi_connection_g();
-
          break;
       case SYSTEM_EVENT_STA_STOP:
          #ifdef ALLOW_USE_PRINTF
@@ -122,10 +127,10 @@ static esp_err_t esp_event_handler(void *ctx, system_event_t *event) {
          break;
       case SYSTEM_EVENT_STA_GOT_IP:
          #ifdef ALLOW_USE_PRINTF
-         printf("\nGot IP: %s\n", ip4addr_ntoa(&event->event_info.got_ip.ip_info.ip));
+         printf("\nGot IP: %s. Time: %u\n", ip4addr_ntoa(&event->event_info.got_ip.ip_info.ip), *time_g);
          #endif
 
-         os_timer_disarm(&wi_fi_reconnection_timer_g);
+         ESP_ERROR_CHECK(esp_timer_stop(wi_fi_reconnection_timer_g))
          save_connected_to_wifi_event();
          on_wifi_connected_g();
          break;
@@ -138,17 +143,15 @@ static esp_err_t esp_event_handler(void *ctx, system_event_t *event) {
       case SYSTEM_EVENT_STA_DISCONNECTED:
          #ifdef ALLOW_USE_PRINTF
          // See reason info in wifi_err_reason_t of esp_wifi_types.h
-         printf("\nDisconnected from %s, reason: %u\n", event->event_info.disconnected.ssid, event->event_info.disconnected.reason);
+         printf("\nDisconnected from %s, reason: %u. Time: %u\n",
+                event->event_info.disconnected.ssid, event->event_info.disconnected.reason, *time_g);
          #endif
 
          on_wifi_disconnected_g();
-         on_wifi_connection_g();
          clear_connected_to_wifi_event();
-
-         os_timer_disarm(&wi_fi_reconnection_timer_g);
-         os_timer_setfn(&wi_fi_reconnection_timer_g, (os_timer_func_t *) connect_to_ap, NULL);
-         os_timer_arm(&wi_fi_reconnection_timer_g, WI_FI_RECONNECTION_INTERVAL_MS, true);
-
+         ESP_ERROR_CHECK(esp_wifi_disconnect()) // Otherwise the devise will try to reconnect after 2 seconds
+         ESP_ERROR_CHECK(esp_timer_stop(wi_fi_reconnection_timer_g))
+         ESP_ERROR_CHECK(esp_timer_start_once(wi_fi_reconnection_timer_g, WI_FI_RECONNECTION_INTERVAL_MS * 1000))
          break;
       default:
          break;
@@ -161,16 +164,27 @@ void wifi_init_sta(void (*on_connected)(), void (*on_disconnected)(), void (*on_
    on_wifi_disconnected_g = on_disconnected;
    on_wifi_connection_g = on_connection;
 
+   tcpip_adapter_init();
+   esp_wifi_set_storage(WIFI_STORAGE_RAM);
    ESP_ERROR_CHECK(esp_event_loop_init(esp_event_handler, NULL))
 
    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT()
    ESP_ERROR_CHECK(esp_wifi_init(&cfg))
 
-   wifi_config_t wifi_config;
+   wifi_config_t wifi_config = {
+         .sta = {
+               .scan_method = WIFI_FAST_SCAN,
+               .bssid_set = false,
+               .channel = 0,
+               .listen_interval = 5,
+               .threshold = {
+                     .rssi = 0,
+                     .authmode = WIFI_AUTH_WPA2_PSK
+               }
+         }
+   };
    memcpy(&wifi_config.sta.ssid, ACCESS_POINT_NAME, 32);
    memcpy(&wifi_config.sta.password, ACCESS_POINT_PASSWORD, 64);
-   wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-   wifi_config.sta.bssid_set = false;
 
    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA))
    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config))
@@ -179,10 +193,6 @@ void wifi_init_sta(void (*on_connected)(), void (*on_disconnected)(), void (*on_
    #ifdef ALLOW_USE_PRINTF
    printf("\nwifi_init_sta finished\n");
    #endif
-}
-
-void disable_wifi_event_handler() {
-   esp_event_loop_set_cb(NULL, NULL);
 }
 
 /**
@@ -264,7 +274,7 @@ void rtc_mem_write(unsigned int dst_block, const void *src, unsigned int length)
       WRITE_PERI_REG(rtc, *ram);
 
       #ifdef ALLOW_USE_PRINTF
-      printf("\nWrite to 0x%X RTC address: 0x%X", (unsigned int) rtc, *ram);
+      //printf("\nWrite to 0x%X RTC address: 0x%X", (unsigned int) rtc, *ram);
       #endif
    }
 
@@ -276,7 +286,7 @@ void rtc_mem_write(unsigned int dst_block, const void *src, unsigned int length)
 int connect_to_http_server() {
    if (!is_connected_to_wifi()) {
       #ifdef ALLOW_USE_PRINTF
-      printf("\nNot connected to Wi-Fi. To be deleted task\n");
+      printf("\nNot connected to Wi-Fi for connections\n");
       #endif
 
       return -1;
@@ -384,7 +394,7 @@ char *send_request(char *request, unsigned short response_buffer_size, const uns
          received_bytes_amount += max_length_exceed ? 0 : len;
 
          #ifdef ALLOW_USE_PRINTF
-         //printf("Received %d bytes, time: %u\n", len, *milliseconds_counter);
+         printf("Received %d bytes, time: %u\n", len, *milliseconds_counter);
          //printf("Response: %s\n", tmp_buffer);
          #endif
       }
@@ -578,4 +588,23 @@ void shutdown_and_close_socket(int socket) {
       shutdown(socket, SHUT_RDWR);
       close(socket);
    }
+}
+
+void uart_config() {
+   uart_config_t uart_config;
+   uart_config.baud_rate = 115200;
+   uart_config.data_bits = UART_DATA_8_BITS;
+   uart_config.parity    = UART_PARITY_DISABLE;
+   uart_config.stop_bits = UART_STOP_BITS_1;
+   uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+   uart_param_config(UART_NUM_0, &uart_config);
+}
+
+void init_utils(unsigned int *time) {
+   time_g = time;
+
+   esp_timer_create_args_t timer_config = {
+         .callback = &connect_to_ap
+   };
+   ESP_ERROR_CHECK(esp_timer_create(&timer_config, &wi_fi_reconnection_timer_g))
 }

@@ -4,4 +4,4 @@ message("~~~ PATH: $ENV{PATH}")
 message("~~~ ESPPORT: $ENV{ESPPORT}")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-project(Projectors)
+project(Motion_Detector)

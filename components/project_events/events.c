@@ -107,3 +107,19 @@ void clear_motion_detector_is_being_ignored_event() {
 bool is_motion_detector_being_ignored() {
    return xEventGroupGetBits(flags_g) & MOTION_DETECTOR_IS_BEING_IGNORED_FLAG;
 }
+
+void save_pin_interrupt_was_initialized_event() {
+   xEventGroupSetBits(flags_g, PIN_INTERRUPT_WAS_INITIALIZED_FLAG);
+}
+
+bool was_pin_interrupt_initialized() {
+   return xEventGroupGetBits(flags_g) & PIN_INTERRUPT_WAS_INITIALIZED_FLAG;
+}
+
+void save_esp_event_loop_initialized_event() {
+   xEventGroupSetBits(flags_g, ESP_EVENT_LOOP_INITIALIZED_FLAG);
+}
+
+bool is_esp_event_loop_initialized() {
+   return xEventGroupGetBits(flags_g) & ESP_EVENT_LOOP_INITIALIZED_FLAG;
+}

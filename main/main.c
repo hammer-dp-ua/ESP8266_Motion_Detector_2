@@ -10,19 +10,22 @@
 static unsigned int hundred_milliseconds_counter_g = 0;
 static int signal_strength_g = 0;
 static unsigned short errors_counter_g = 0;
-static unsigned short repetitive_request_errors_counter_g = 0;
-static unsigned int repetitive_ap_connecting_errors_counter_g = 0;
+static unsigned char repetitive_request_errors_counter_g = 0;
+static unsigned char repetitive_ap_connecting_errors_counter_g = 0;
 static unsigned int repetitive_tcp_server_errors_counter_g = 0;
 
 static esp_timer_handle_t milliseconds_timer_g = NULL;
 static esp_timer_handle_t errors_checker_timer_g = NULL;
 static esp_timer_handle_t blink_both_leds_timer_g = NULL;
 static esp_timer_handle_t status_sender_timer_g = NULL;
-static esp_timer_handle_t access_point_scanning_timer_g = NULL;
+static esp_timer_handle_t ap_scanning_timer_g = NULL;
 static esp_timer_handle_t stop_motion_detector_ignoring_timer_g = NULL;
+static esp_timer_handle_t anti_contact_bounce_timer_g = NULL;
 
 static SemaphoreHandle_t wirelessNetworkActionsSemaphore_g = NULL;
 static xQueueHandle network_events_queue_g = NULL;
+
+static unsigned short interrupts_counter_g = 0;
 
 static void hundred_milliseconds_counter_cb() {
    hundred_milliseconds_counter_g++;
@@ -34,13 +37,11 @@ static void start_100_milliseconds_counter() {
    };
 
    ESP_ERROR_CHECK(esp_timer_create(&timer_config, &milliseconds_timer_g))
-   ESP_ERROR_CHECK(esp_timer_start_periodic(milliseconds_timer_g, 1000 / MILLISECONDS_COUNTER_DIVIDER * 1000)) // 1000/10 = 100 ms
+   ESP_ERROR_CHECK(esp_timer_start_periodic(milliseconds_timer_g, (1000 / MILLISECONDS_COUNTER_DIVIDER) * 1000)) // 1000/10 = 100 ms
 }
 
 static void scan_access_point_task() {
-   save_access_point_scanning_event();
-
-   unsigned int rescan_when_not_connected_task_delay = 30 * 1000 / portTICK_PERIOD_MS; // 30 secs
+   unsigned int rescan_when_not_connected_delay = 30 * 1000 / portTICK_PERIOD_MS; // 30 secs
    wifi_scan_config_t scan_config;
    unsigned short scanned_access_points_amount = 1;
    wifi_ap_record_t scanned_access_points[1];
@@ -52,7 +53,7 @@ static void scan_access_point_task() {
 
    for (;;) {
       if (!is_connected_to_wifi()) {
-         vTaskDelay(rescan_when_not_connected_task_delay);
+         vTaskDelay(rescan_when_not_connected_delay);
          continue;
       }
 
@@ -89,7 +90,7 @@ static void scan_access_point_task() {
       if (scanned) {
          break;
       } else {
-         vTaskDelay(rescan_when_not_connected_task_delay);
+         vTaskDelay(rescan_when_not_connected_delay);
       }
    }
 
@@ -162,7 +163,6 @@ static void on_response_error() {
 }
 
 static void send_status_info_task() {
-   save_sending_status_info_event();
    xSemaphoreTake(wirelessNetworkActionsSemaphore_g, portMAX_DELAY);
    blink_on_send(SERVER_AVAILABILITY_STATUS_LED_PIN);
 
@@ -264,7 +264,7 @@ static void send_status_info_task() {
    printf("\nCreated Info Request: %s\nTime: %u\n", request, hundred_milliseconds_counter_g);
    #endif
 
-   char *response = send_request(request, 255, &hundred_milliseconds_counter_g);
+   char *response = send_request(request, 512, &hundred_milliseconds_counter_g);
 
    FREE(request);
 
@@ -282,7 +282,7 @@ static void send_status_info_task() {
          }
 
          #ifdef ALLOW_USE_PRINTF
-         printf("Status Info Response OK, time: %u\n", hundred_milliseconds_counter_g);
+         printf("Status Info Response OK. Time: %u\n", hundred_milliseconds_counter_g);
          #endif
 
          if (strstr(response, UPDATE_FIRMWARE)) {
@@ -293,6 +293,12 @@ static void send_status_info_task() {
 
             update_firmware(AP_CONNECTION_STATUS_LED_PIN, SERVER_AVAILABILITY_STATUS_LED_PIN);
          }
+
+         if (strstr(response, MANUALLY_IGNORE_ALARMS)) {
+            save_manually_ignored_alarms_flag();
+         } else {
+            clear_manually_ignored_alarms_flag();
+         }
       } else {
          on_response_error();
       }
@@ -300,18 +306,26 @@ static void send_status_info_task() {
       FREE(response);
    }
 
+   #ifdef ALLOW_USE_PRINTF
+   printf("send_status_info_task to be deleted. Time: %u\n", hundred_milliseconds_counter_g);
+   #endif
+
    clear_sending_status_info_event();
    xSemaphoreGive(wirelessNetworkActionsSemaphore_g);
    vTaskDelete(NULL);
 }
 
 static void send_alarm_task() {
-   save_sending_alarm_event();
    save_motion_detector_is_being_ignored_event();
+   printf("\nInterrupts counter: %u\n", interrupts_counter_g);
    beep();
 
    for (;;) {
       if (!is_connected_to_wifi()) {
+         #ifdef ALLOW_USE_PRINTF
+         printf("\nIsn't connected to Wi-Fi inside send_alarm_task. Pausing %u...\n", ALARM_RESEND_PAUSE);
+         #endif
+
          vTaskDelay(ALARM_RESEND_PAUSE);
          continue;
       }
@@ -326,32 +340,24 @@ static void send_alarm_task() {
       printf("\nCreated Alarm Request: %s\nTime: %u\n", request, hundred_milliseconds_counter_g);
       #endif
 
-      char *response = send_request(request, 255, &hundred_milliseconds_counter_g);
+      char *response = send_request(request, 512, &hundred_milliseconds_counter_g);
 
       FREE(request);
 
-      bool response_ok;
+      bool response_ok = false;
 
       if (response == NULL) {
          on_response_error();
-         response_ok = false;
       } else {
          if (strstr(response, RESPONSE_SERVER_SENT_OK)) {
             on_response_ok();
             response_ok = true;
 
             #ifdef ALLOW_USE_PRINTF
-            printf("Alarm Response OK, time: %u\n", hundred_milliseconds_counter_g);
+            printf("Alarm Response OK. Time: %u\n", hundred_milliseconds_counter_g);
             #endif
-
-            if (strstr(response, MANUALLY_IGNORE_ALARMS)) {
-               save_manually_ignored_alarms_flag();
-            } else {
-               clear_manually_ignored_alarms_flag();
-            }
          } else {
             on_response_error();
-            response_ok = false;
          }
 
          FREE(response);
@@ -362,15 +368,20 @@ static void send_alarm_task() {
       if (response_ok) {
          break;
       } else {
+         #ifdef ALLOW_USE_PRINTF
+         printf("\nResponse isn't OK inside send_alarm_task. Pausing %u...\n", ALARM_RESEND_PAUSE);
+         #endif
+
          vTaskDelay(ALARM_RESEND_PAUSE);
       }
    }
 
-   esp_timer_create_args_t timer_config = {
-         .callback = &stop_motion_detector_ignoring_cb
-   };
-   ESP_ERROR_CHECK(esp_timer_create(&timer_config, &stop_motion_detector_ignoring_timer_g))
+   ESP_ERROR_CHECK(esp_timer_stop(stop_motion_detector_ignoring_timer_g))
    ESP_ERROR_CHECK(esp_timer_start_once(stop_motion_detector_ignoring_timer_g, MOTION_DETECTOR_IGNORING_TIMEOUT_MS * 1000))
+
+   #ifdef ALLOW_USE_PRINTF
+   printf("send_alarm_task to be deleted. Time: %u\n", hundred_milliseconds_counter_g);
+   #endif
 
    clear_sending_alarm_event();
    vTaskDelete(NULL);
@@ -384,6 +395,17 @@ static void beep() {
 
 static void stop_motion_detector_ignoring_cb() {
    clear_motion_detector_is_being_ignored_event();
+
+   #ifdef ALLOW_USE_PRINTF
+   printf("Stop motion detector ignoring. Time: %u\n", hundred_milliseconds_counter_g);
+   #endif
+}
+
+static void init_stopping_motion_detector_ignoring_timer() {
+   esp_timer_create_args_t timer_config = {
+         .callback = &stop_motion_detector_ignoring_cb
+   };
+   ESP_ERROR_CHECK(esp_timer_create(&timer_config, &stop_motion_detector_ignoring_timer_g))
 }
 
 static void send_sending_status_info_event_cb() {
@@ -398,12 +420,6 @@ static void schedule_sending_status_info(unsigned int timeout_ms) {
 
    ESP_ERROR_CHECK(esp_timer_create(&timer_config, &status_sender_timer_g))
    ESP_ERROR_CHECK(esp_timer_start_periodic(status_sender_timer_g, timeout_ms * 1000))
-}
-
-static void gpio_isr_handler(void *arg) {
-   //unsigned int gpio_num = (unsigned int) arg;
-   unsigned int event = ALARM_EVENT;
-   xQueueSendToBackFromISR(network_events_queue_g, &event, NULL);
 }
 
 static void pins_config() {
@@ -423,32 +439,55 @@ static void pins_config() {
    input_pins.mode = GPIO_MODE_INPUT;
    input_pins.pin_bit_mask = (1<<MOTION_DETECTOR_INPUT_PIN);
    input_pins.pull_up_en = GPIO_PULLUP_ENABLE;
-   input_pins.intr_type = GPIO_INTR_NEGEDGE; // falling edge
+   input_pins.intr_type = GPIO_INTR_NEGEDGE;
    ESP_ERROR_CHECK(gpio_config(&input_pins))
+}
+
+static void resume_pins_interrupts_cb() {
+   ESP_ERROR_CHECK(gpio_set_intr_type(MOTION_DETECTOR_INPUT_PIN, GPIO_INTR_NEGEDGE))
+
+   #ifdef ALLOW_USE_PRINTF
+   printf("\nPins interrupts resumed. Time: %u\n", hundred_milliseconds_counter_g);
+   #endif
+}
+
+static void gpio_isr_handler(void *arg) {
+   if (was_pin_interrupt_initialized()) {
+      ESP_ERROR_CHECK(gpio_set_intr_type(MOTION_DETECTOR_INPUT_PIN, GPIO_INTR_DISABLE))
+      ESP_ERROR_CHECK(esp_timer_start_once(anti_contact_bounce_timer_g, 5000 * 1000)) // resume interrupts after 5000 ms
+
+      interrupts_counter_g++;
+      unsigned int event = SEND_ALARM_EVENT;
+      xQueueSendToBackFromISR(network_events_queue_g, &event, NULL);
+   } else {
+      save_pin_interrupt_was_initialized_event();
+   }
+}
+
+static void pins_isr_config() {
+   esp_timer_create_args_t timer_config = {
+         .callback = &resume_pins_interrupts_cb
+   };
+   ESP_ERROR_CHECK(esp_timer_create(&timer_config, &anti_contact_bounce_timer_g))
 
    // change GPIO interrupt type for one pin
    ESP_ERROR_CHECK(gpio_set_intr_type(MOTION_DETECTOR_INPUT_PIN, GPIO_INTR_NEGEDGE))
    ESP_ERROR_CHECK(gpio_install_isr_service(0))
-   ESP_ERROR_CHECK(gpio_isr_handler_add(MOTION_DETECTOR_INPUT_PIN, gpio_isr_handler, (void *) MOTION_DETECTOR_INPUT_PIN))
+   // The handler will be invoked immediately after added
+   ESP_ERROR_CHECK(gpio_isr_handler_add(MOTION_DETECTOR_INPUT_PIN, gpio_isr_handler, NULL))
 }
 
-void on_wifi_connected() {
+static void on_wifi_connected() {
    gpio_set_level(AP_CONNECTION_STATUS_LED_PIN, 1);
    repetitive_ap_connecting_errors_counter_g = 0;
 
    send_sending_status_info_event_cb();
 }
 
-void on_wifi_disconnected_task() {
+static void on_wifi_disconnected() {
    repetitive_ap_connecting_errors_counter_g++;
    gpio_set_level(AP_CONNECTION_STATUS_LED_PIN, 0);
    gpio_set_level(SERVER_AVAILABILITY_STATUS_LED_PIN, 0);
-
-   vTaskDelete(NULL);
-}
-
-void on_wifi_disconnected() {
-   xTaskCreate(on_wifi_disconnected_task, "on_wifi_disconnected_task", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 }
 
 static void blink_on_wifi_connection_task() {
@@ -456,18 +495,8 @@ static void blink_on_wifi_connection_task() {
    vTaskDelete(NULL);
 }
 
-void blink_on_wifi_connection() {
+static void blink_on_wifi_connection() {
    xTaskCreate(blink_on_wifi_connection_task, "blink_on_wifi_connection_task", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-}
-
-static void uart_config() {
-   uart_config_t uart_config;
-   uart_config.baud_rate = 115200;
-   uart_config.data_bits = UART_DATA_8_BITS;
-   uart_config.parity    = UART_PARITY_DISABLE;
-   uart_config.stop_bits = UART_STOP_BITS_1;
-   uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
-   uart_param_config(UART_NUM_0, &uart_config);
 }
 
 /**
@@ -529,8 +558,8 @@ static void schedule_access_point_scanning(unsigned int timeout_ms) {
          .callback = &send_access_point_scanning_event_cb
    };
 
-   ESP_ERROR_CHECK(esp_timer_create(&timer_config, &access_point_scanning_timer_g))
-   ESP_ERROR_CHECK(esp_timer_start_periodic(access_point_scanning_timer_g, timeout_ms * 1000))
+   ESP_ERROR_CHECK(esp_timer_create(&timer_config, &ap_scanning_timer_g))
+   ESP_ERROR_CHECK(esp_timer_start_periodic(ap_scanning_timer_g, timeout_ms * 1000))
 }
 
 static void event_processing_task() {
@@ -546,36 +575,56 @@ static void event_processing_task() {
             if (!is_connected_to_wifi() || is_status_info_being_sent()) {
                continue;
             }
+
+            save_sending_status_info_event();
             xTaskCreate(send_status_info_task, SEND_STATUS_INFO_TASK_NAME, configMINIMAL_STACK_SIZE * 3, NULL, 1, NULL);
-         } else if (event == ALARM_EVENT) {
+         } else if (event == SEND_ALARM_EVENT) {
             if (is_alarm_being_sent() || is_manually_ignored_alarms() || is_motion_detector_being_ignored()) {
+               #ifdef ALLOW_USE_PRINTF
+               printf("\nCan't send alarm, because: ");
+
+               if (is_alarm_being_sent()) {
+                  printf("already being sent\n");
+               }
+               if (is_manually_ignored_alarms()) {
+                  printf("manually ignored\n");
+               }
+               if (is_motion_detector_being_ignored()) {
+                  printf("motion detector is being ignored\n");
+               }
+               #endif
+
                continue;
             }
-            xTaskCreate(send_alarm_task, "send_alarm_task", configMINIMAL_STACK_SIZE * 2, NULL, 1, NULL);
+
+            save_sending_alarm_event();
+            xTaskCreate(send_alarm_task, "alarm_task", configMINIMAL_STACK_SIZE * 3, NULL, 1, NULL);
          } else if (event == SCAN_ACCESS_POINT_EVENT) {
             if (is_access_point_is_being_scanned()) {
                continue;
             }
-            xTaskCreate(scan_access_point_task, "scan_access_point_task", configMINIMAL_STACK_SIZE * 3, NULL, 1, NULL);
+
+            save_access_point_scanning_event();
+            xTaskCreate(scan_access_point_task, "scan_ap_task", configMINIMAL_STACK_SIZE * 3, NULL, 1, NULL);
          }
       }
    }
 }
 
 void app_main(void) {
+   start_100_milliseconds_counter();
+
    pins_config();
-   uart_config();
 
    init_events();
+   init_utils(&hundred_milliseconds_counter_g);
 
    network_events_queue_g = xQueueCreate(10, sizeof(unsigned int));
    xTaskCreate(event_processing_task, "event_processing_task", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 
    start_both_leds_blinking(100);
-   vTaskDelay(5000 / portTICK_PERIOD_MS);
+   vTaskDelay(4000 / portTICK_PERIOD_MS);
    stop_both_leds_blinking();
-
-   gpio_set_level(MOTION_DETECTOR_ENABLE_PIN, 1);
 
    #ifdef ALLOW_USE_PRINTF
    const esp_partition_t *running = esp_ota_get_running_partition();
@@ -583,13 +632,10 @@ void app_main(void) {
          running->label, running->type, running->subtype, running->address, running->size, __TIMESTAMP__);
    #endif
 
-   tcpip_adapter_init();
-   tcpip_adapter_dhcpc_stop(TCPIP_ADAPTER_IF_STA); // Stop DHCP client
-   tcpip_adapter_ip_info_t ip_info;
-   ip_info.ip.addr = inet_addr(OWN_IP_ADDRESS);
-   ip_info.gw.addr = inet_addr(OWN_GETAWAY_ADDRESS);
-   ip_info.netmask.addr = inet_addr(OWN_NETMASK);
-   tcpip_adapter_set_ip_info(TCPIP_ADAPTER_IF_STA, &ip_info);
+   gpio_set_level(MOTION_DETECTOR_ENABLE_PIN, 1);
+   vTaskDelay(1000 / portTICK_PERIOD_MS);
+   pins_isr_config();
+   init_stopping_motion_detector_ignoring_timer();
 
    wirelessNetworkActionsSemaphore_g = xSemaphoreCreateBinary();
    xSemaphoreGive(wirelessNetworkActionsSemaphore_g);
@@ -597,8 +643,6 @@ void app_main(void) {
    wifi_init_sta(on_wifi_connected, on_wifi_disconnected, blink_on_wifi_connection);
 
    schedule_access_point_scanning(SCAN_ACCESS_POINT_TASK_INTERVAL);
-   schedule_errors_checker(ERRORS_CHECKER_INTERVAL_MS);
+   //schedule_errors_checker(ERRORS_CHECKER_INTERVAL_MS);
    schedule_sending_status_info(STATUS_REQUESTS_SEND_INTERVAL_MS);
-
-   start_100_milliseconds_counter();
 }

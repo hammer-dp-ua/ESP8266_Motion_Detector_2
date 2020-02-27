@@ -5,18 +5,20 @@
 #include "freertos/FreeRTOS.h"
 #include "event_groups.h"
 
-#define FIRST_STATUS_INFO_SENT_FLAG    (1 << 0)
-#define UPDATE_FIRMWARE_FLAG           (1 << 1)
-#define REQUEST_ERROR_OCCURRED_FLAG    (1 << 2)
-#define STATUS_INFO_IS_BEING_SENT_FLAG (1 << 3)
-#define WIFI_CONNECTED_FLAG            (1 << 4)
-#define ALARM_EVENT                    (1 << 5)
-#define SEND_STATUS_INFO_EVENT         (1 << 6)
-#define MANUALLY_IGNORE_ALARMS_FLAG    (1 << 7)
-#define ALARM_IS_BEING_SENT_FLAG       (1 << 8)
-#define SCAN_ACCESS_POINT_EVENT        (1 << 9)
-#define ACCESS_POINT_IS_BEING_SCANNED_FLAG (1 << 10)
-#define MOTION_DETECTOR_IS_BEING_IGNORED_FLAG (1 << 11)
+#define FIRST_STATUS_INFO_SENT_FLAG             (1 << 0)
+#define UPDATE_FIRMWARE_FLAG                    (1 << 1)
+#define REQUEST_ERROR_OCCURRED_FLAG             (1 << 2)
+#define STATUS_INFO_IS_BEING_SENT_FLAG          (1 << 3)
+#define WIFI_CONNECTED_FLAG                     (1 << 4)
+#define MANUALLY_IGNORE_ALARMS_FLAG             (1 << 5)
+#define ALARM_IS_BEING_SENT_FLAG                (1 << 6)
+#define ACCESS_POINT_IS_BEING_SCANNED_FLAG      (1 << 7)
+#define MOTION_DETECTOR_IS_BEING_IGNORED_FLAG   (1 << 8)
+#define PIN_INTERRUPT_WAS_INITIALIZED_FLAG      (1 << 9)
+#define ESP_EVENT_LOOP_INITIALIZED_FLAG         (1 << 10)
+#define SEND_ALARM_EVENT                        (1 << 11)
+#define SEND_STATUS_INFO_EVENT                  (1 << 12)
+#define SCAN_ACCESS_POINT_EVENT                 (1 << 13)
 
 void init_events();
 void save_being_updated_event();
@@ -44,5 +46,9 @@ bool is_access_point_is_being_scanned();
 void save_motion_detector_is_being_ignored_event();
 void clear_motion_detector_is_being_ignored_event();
 bool is_motion_detector_being_ignored();
+void save_pin_interrupt_was_initialized_event();
+bool was_pin_interrupt_initialized();
+void save_esp_event_loop_initialized_event();
+bool is_esp_event_loop_initialized();
 
 #endif

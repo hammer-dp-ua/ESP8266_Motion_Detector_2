@@ -1,6 +1,6 @@
 #include "freertos/FreeRTOS.h"
-#include "driver/uart.h"
 #include "task.h"
+#include "nvs_flash.h"
 
 #include "global_definitions.h"
 #include "malloc_logger.h"
@@ -9,21 +9,29 @@
 #ifndef MAIN_HEADER
 #define MAIN_HEADER
 
+#ifdef TESTING
 #define AP_CONNECTION_STATUS_LED_PIN         GPIO_NUM_13
 #define SERVER_AVAILABILITY_STATUS_LED_PIN   GPIO_NUM_2
 #define BUZZER_PIN                           GPIO_NUM_4
 #define MOTION_DETECTOR_ENABLE_PIN           GPIO_NUM_14
 #define MOTION_DETECTOR_INPUT_PIN            GPIO_NUM_12
+#else
+#define AP_CONNECTION_STATUS_LED_PIN         GPIO_NUM_5
+#define SERVER_AVAILABILITY_STATUS_LED_PIN   GPIO_NUM_4
+#define BUZZER_PIN                           GPIO_NUM_12
+#define MOTION_DETECTOR_ENABLE_PIN           GPIO_NUM_14
+#define MOTION_DETECTOR_INPUT_PIN            GPIO_NUM_2
+#endif
 
 #define ERRORS_CHECKER_INTERVAL_MS (10 * 1000)
-#define STATUS_REQUESTS_SEND_INTERVAL_MS (60 * 1000)
+#define STATUS_REQUESTS_SEND_INTERVAL_MS (30 * 1000)
 #define SCAN_ACCESS_POINT_TASK_INTERVAL (10 * 60 * 1000) // 10 minutes
 #define ALARM_RESEND_PAUSE (10 * 1000 / portTICK_PERIOD_MS) // 10 seconds
 #define MOTION_DETECTOR_IGNORING_TIMEOUT_MS (60 * 1000)
 
 #define MILLISECONDS_COUNTER_DIVIDER 10
 
-#define MAX_REPETITIVE_ALLOWED_ERRORS_AMOUNT 15
+#define MAX_REPETITIVE_ALLOWED_AP_ERRORS_AMOUNT 15
 
 #define SYSTEM_RESTART_REASON_TYPE_RTC_ADDRESS  64
 #define CONNECTION_ERROR_CODE_RTC_ADDRESS       SYSTEM_RESTART_REASON_TYPE_RTC_ADDRESS + 1
